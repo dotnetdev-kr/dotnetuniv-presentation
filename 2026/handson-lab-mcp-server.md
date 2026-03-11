@@ -78,43 +78,40 @@ mkdir mcp-lab && cd mcp-lab
 
 ## Step 1: SQLite 데이터베이스 준비
 
-MCP 서버가 질의할 대상 데이터를 먼저 준비합니다. 이 랩에서는 간단한 도서 목록 데이터베이스를 사용합니다.
+MCP 서버가 질의할 대상 데이터를 먼저 준비합니다. 이 랩에서는 **Chinook** 데이터베이스를 사용합니다. Chinook은 디지털 음원 매장을 모델링한 샘플 데이터베이스로, 아티스트, 앨범, 트랙, 장르, 고객, 인보이스 등 11개 테이블과 실제 iTunes 라이브러리 기반의 데이터를 포함하고 있습니다.
 
-### 1-1. SQLite CLI로 데이터베이스 생성
+### 1-1. Chinook 데이터베이스 다운로드
+
+GitHub 릴리스 페이지에서 SQLite용 데이터베이스 파일을 다운로드합니다.
 
 ```bash
-sqlite3 books.db <<'EOF'
-CREATE TABLE IF NOT EXISTS books (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    author TEXT NOT NULL,
-    year INTEGER NOT NULL,
-    genre TEXT NOT NULL
-);
-
-INSERT INTO books (title, author, year, genre) VALUES
-    ('클린 코드', 'Robert C. Martin', 2008, '소프트웨어 공학'),
-    ('리팩터링', 'Martin Fowler', 2018, '소프트웨어 공학'),
-    ('도메인 주도 설계', 'Eric Evans', 2003, '소프트웨어 공학'),
-    ('디자인 패턴', 'GoF', 1994, '소프트웨어 공학'),
-    ('실용주의 프로그래머', 'Hunt & Thomas', 1999, '소프트웨어 공학'),
-    ('코딩 인터뷰 완전 분석', 'Gayle McDowell', 2015, '취업'),
-    ('가상 면접 사례로 배우는 대규모 시스템 설계', 'Alex Xu', 2020, '시스템 설계'),
-    ('데이터 중심 애플리케이션 설계', 'Martin Kleppmann', 2017, '데이터 공학'),
-    ('HTTP 완벽 가이드', 'David Gourley', 2002, '웹'),
-    ('운영체제 아주 쉬운 세 가지 이야기', 'Remzi Arpaci-Dusseau', 2018, '운영체제');
-EOF
+curl -L -o Chinook_Sqlite.sqlite \
+  https://github.com/lerocha/chinook-database/releases/download/v1.4.5/Chinook_Sqlite.sqlite
 ```
+
+> 현장에서 인터넷이 불안정할 경우, 진행자가 USB 등으로 파일을 배포할 예정입니다.
 
 ### 1-2. 데이터 확인
 
 ```bash
-sqlite3 books.db "SELECT * FROM books;"
+sqlite3 Chinook_Sqlite.sqlite ".tables"
 ```
 
-10건의 도서 데이터가 출력되면 성공입니다.
+다음과 같이 11개 테이블이 출력되면 성공입니다.
 
-> 📌 **체크포인트**: `books.db` 파일이 작업 폴더에 존재하고, 10건의 레코드가 조회되어야 합니다.
+```
+Album          Employee       InvoiceLine    PlaylistTrack
+Artist         Genre          MediaType      Track
+Customer       Invoice        Playlist
+```
+
+간단한 조회도 해봅니다.
+
+```bash
+sqlite3 Chinook_Sqlite.sqlite "SELECT ArtistId, Name FROM Artist LIMIT 5;"
+```
+
+> 📌 **체크포인트**: `Chinook_Sqlite.sqlite` 파일이 작업 폴더에 존재하고, 11개 테이블이 조회되어야 합니다.
 
 ---
 
@@ -177,56 +174,71 @@ await builder.Build().RunAsync();
 
 ## Step 4: MCP 도구(Tool) 구현
 
-MCP 서버의 핵심은 **도구(Tool)** 입니다. AI 클라이언트는 이 도구를 호출하여 외부 리소스와 상호작용합니다. 도구 클래스에는 `[McpServerToolType]` 어트리뷰트를, 개별 메서드에는 `[McpServerTool]` 어트리뷰트를 붙이고, `[Description]`으로 AI가 도구의 용도와 매개변수를 이해할 수 있도록 설명을 제공합니다. 이 랩에서는 세 가지 도구를 구현합니다.
+MCP 서버의 핵심은 **도구(Tool)** 입니다. AI 클라이언트는 이 도구를 호출하여 외부 리소스와 상호작용합니다. 도구 클래스에는 `[McpServerToolType]` 어트리뷰트를, 개별 메서드에는 `[McpServerTool]` 어트리뷰트를 붙이고, `[Description]`으로 AI가 도구의 용도와 매개변수를 이해할 수 있도록 설명을 제공합니다. 이 랩에서는 Chinook 데이터베이스의 음원 데이터를 다루는 세 가지 도구를 구현합니다.
 
 ### 4-1. 도구 클래스 선언
 
 ```csharp
 [McpServerToolType]
-public static class BookTools
+public static class ChinookTools
 {
-    private const string DbPath = "books.db";
+    private const string DbPath = "Chinook_Sqlite.sqlite";
 ```
 
-### 4-2. 도구 1 — 전체 도서 목록 조회
+### 4-2. 도구 1 — 아티스트 검색
 
 ```csharp
-    [McpServerTool, Description("등록된 모든 도서 목록을 조회합니다.")]
-    public static string ListBooks()
-    {
-        using var conn = new SqliteConnection($"Data Source={DbPath}");
-        conn.Open();
-
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT id, title, author, year, genre FROM books ORDER BY id";
-
-        using var reader = cmd.ExecuteReader();
-        var results = new System.Text.StringBuilder();
-        while (reader.Read())
-        {
-            results.AppendLine(
-                $"[{reader.GetInt32(0)}] {reader.GetString(1)} — {reader.GetString(2)} ({reader.GetInt32(3)}, {reader.GetString(4)})");
-        }
-
-        return results.Length > 0 ? results.ToString() : "등록된 도서가 없습니다.";
-    }
-```
-
-### 4-3. 도구 2 — 키워드 검색
-
-```csharp
-    [McpServerTool, Description("제목 또는 저자명으로 도서를 검색합니다.")]
-    public static string SearchBooks(
-        [Description("검색할 키워드 (제목 또는 저자명)")] string keyword)
+    [McpServerTool, Description("아티스트를 이름으로 검색하고, 해당 아티스트의 앨범 목록을 함께 반환합니다.")]
+    public static string SearchArtists(
+        [Description("검색할 아티스트 이름 (부분 일치)")] string name)
     {
         using var conn = new SqliteConnection($"Data Source={DbPath}");
         conn.Open();
 
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, title, author, year, genre FROM books
-            WHERE title LIKE @kw OR author LIKE @kw
-            ORDER BY id
+            SELECT ar.ArtistId, ar.Name, al.Title
+            FROM Artist ar
+            LEFT JOIN Album al ON ar.ArtistId = al.ArtistId
+            WHERE ar.Name LIKE @name
+            ORDER BY ar.Name, al.Title
+            """;
+        cmd.Parameters.AddWithValue("@name", $"%{name}%");
+
+        using var reader = cmd.ExecuteReader();
+        var results = new System.Text.StringBuilder();
+        while (reader.Read())
+        {
+            var album = reader.IsDBNull(2) ? "(앨범 없음)" : reader.GetString(2);
+            results.AppendLine($"[{reader.GetInt32(0)}] {reader.GetString(1)} — {album}");
+        }
+
+        return results.Length > 0 ? results.ToString() : $"'{name}'에 해당하는 아티스트를 찾을 수 없습니다.";
+    }
+```
+
+### 4-3. 도구 2 — 트랙 검색
+
+```csharp
+    [McpServerTool, Description("트랙을 이름으로 검색하고, 앨범명, 아티스트명, 장르, 재생 시간을 함께 반환합니다.")]
+    public static string SearchTracks(
+        [Description("검색할 트랙 이름 (부분 일치)")] string keyword)
+    {
+        using var conn = new SqliteConnection($"Data Source={DbPath}");
+        conn.Open();
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT t.Name, al.Title, ar.Name, g.Name,
+                   t.Milliseconds / 1000 / 60 || ':' ||
+                   substr('0' || (t.Milliseconds / 1000 % 60), -2) AS Duration
+            FROM Track t
+            JOIN Album al ON t.AlbumId = al.AlbumId
+            JOIN Artist ar ON al.ArtistId = ar.ArtistId
+            JOIN Genre g ON t.GenreId = g.GenreId
+            WHERE t.Name LIKE @kw
+            ORDER BY ar.Name, al.Title
+            LIMIT 20
             """;
         cmd.Parameters.AddWithValue("@kw", $"%{keyword}%");
 
@@ -235,40 +247,69 @@ public static class BookTools
         while (reader.Read())
         {
             results.AppendLine(
-                $"[{reader.GetInt32(0)}] {reader.GetString(1)} — {reader.GetString(2)} ({reader.GetInt32(3)}, {reader.GetString(4)})");
+                $"{reader.GetString(0)} [{reader.GetString(4)}] — {reader.GetString(2)} / {reader.GetString(1)} ({reader.GetString(3)})");
         }
 
-        return results.Length > 0 ? results.ToString() : $"'{keyword}'에 해당하는 도서를 찾을 수 없습니다.";
+        return results.Length > 0 ? results.ToString() : $"'{keyword}'에 해당하는 트랙을 찾을 수 없습니다.";
     }
 ```
 
-### 4-4. 도구 3 — 장르별 조회
+### 4-4. 도구 3 — 장르별 트랙 통계
 
 ```csharp
-    [McpServerTool, Description("특정 장르에 해당하는 도서 목록을 조회합니다.")]
-    public static string GetBooksByGenre(
-        [Description("조회할 장르 (예: 소프트웨어 공학, 시스템 설계, 웹)")] string genre)
+    [McpServerTool, Description("장르별 트랙 수와 총 재생 시간을 조회합니다. 특정 장르를 지정하면 해당 장르의 트랙 목록을 반환합니다.")]
+    public static string GetGenreStats(
+        [Description("특정 장르 이름 (생략하면 전체 장르 통계를 반환)")] string? genre = null)
     {
         using var conn = new SqliteConnection($"Data Source={DbPath}");
         conn.Open();
 
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            SELECT id, title, author, year, genre FROM books
-            WHERE genre = @genre
-            ORDER BY year
-            """;
-        cmd.Parameters.AddWithValue("@genre", genre);
+
+        if (string.IsNullOrWhiteSpace(genre))
+        {
+            cmd.CommandText = """
+                SELECT g.Name, COUNT(*) AS TrackCount,
+                       SUM(t.Milliseconds) / 1000 / 3600 || '시간 ' ||
+                       (SUM(t.Milliseconds) / 1000 % 3600) / 60 || '분' AS TotalDuration
+                FROM Track t
+                JOIN Genre g ON t.GenreId = g.GenreId
+                GROUP BY g.Name
+                ORDER BY TrackCount DESC
+                """;
+        }
+        else
+        {
+            cmd.CommandText = """
+                SELECT t.Name, ar.Name, al.Title,
+                       t.Milliseconds / 1000 / 60 || ':' ||
+                       substr('0' || (t.Milliseconds / 1000 % 60), -2) AS Duration
+                FROM Track t
+                JOIN Genre g ON t.GenreId = g.GenreId
+                JOIN Album al ON t.AlbumId = al.AlbumId
+                JOIN Artist ar ON al.ArtistId = ar.ArtistId
+                WHERE g.Name = @genre
+                ORDER BY ar.Name, t.Name
+                LIMIT 30
+                """;
+            cmd.Parameters.AddWithValue("@genre", genre);
+        }
 
         using var reader = cmd.ExecuteReader();
         var results = new System.Text.StringBuilder();
-        while (reader.Read())
+
+        if (string.IsNullOrWhiteSpace(genre))
         {
-            results.AppendLine(
-                $"[{reader.GetInt32(0)}] {reader.GetString(1)} — {reader.GetString(2)} ({reader.GetInt32(3)})");
+            while (reader.Read())
+                results.AppendLine($"{reader.GetString(0)}: {reader.GetInt32(1)}곡 ({reader.GetString(2)})");
+        }
+        else
+        {
+            while (reader.Read())
+                results.AppendLine($"{reader.GetString(0)} [{reader.GetString(3)}] — {reader.GetString(1)} / {reader.GetString(2)}");
         }
 
-        return results.Length > 0 ? results.ToString() : $"'{genre}' 장르의 도서를 찾을 수 없습니다.";
+        return results.Length > 0 ? results.ToString() : $"'{genre}' 장르를 찾을 수 없습니다.";
     }
 }
 ```
@@ -279,7 +320,7 @@ public static class BookTools
 
 ## Step 5: 완성된 코드 전문
 
-아래는 `app.cs`의 전체 코드입니다. 공백 포함 약 90줄입니다.
+아래는 `app.cs`의 전체 코드입니다. 공백 포함 약 100줄입니다.
 
 ```csharp
 #!/usr/bin/env dotnet
@@ -305,42 +346,57 @@ await builder.Build().RunAsync();
 // ── MCP Tools ──────────────────────────────────────────
 
 [McpServerToolType]
-public static class BookTools
+public static class ChinookTools
 {
-    private const string DbPath = "books.db";
+    private const string DbPath = "Chinook_Sqlite.sqlite";
 
-    [McpServerTool, Description("등록된 모든 도서 목록을 조회합니다.")]
-    public static string ListBooks()
-    {
-        using var conn = new SqliteConnection($"Data Source={DbPath}");
-        conn.Open();
-
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT id, title, author, year, genre FROM books ORDER BY id";
-
-        using var reader = cmd.ExecuteReader();
-        var results = new System.Text.StringBuilder();
-        while (reader.Read())
-        {
-            results.AppendLine(
-                $"[{reader.GetInt32(0)}] {reader.GetString(1)} — {reader.GetString(2)} ({reader.GetInt32(3)}, {reader.GetString(4)})");
-        }
-
-        return results.Length > 0 ? results.ToString() : "등록된 도서가 없습니다.";
-    }
-
-    [McpServerTool, Description("제목 또는 저자명으로 도서를 검색합니다.")]
-    public static string SearchBooks(
-        [Description("검색할 키워드 (제목 또는 저자명)")] string keyword)
+    [McpServerTool, Description("아티스트를 이름으로 검색하고, 해당 아티스트의 앨범 목록을 함께 반환합니다.")]
+    public static string SearchArtists(
+        [Description("검색할 아티스트 이름 (부분 일치)")] string name)
     {
         using var conn = new SqliteConnection($"Data Source={DbPath}");
         conn.Open();
 
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, title, author, year, genre FROM books
-            WHERE title LIKE @kw OR author LIKE @kw
-            ORDER BY id
+            SELECT ar.ArtistId, ar.Name, al.Title
+            FROM Artist ar
+            LEFT JOIN Album al ON ar.ArtistId = al.ArtistId
+            WHERE ar.Name LIKE @name
+            ORDER BY ar.Name, al.Title
+            """;
+        cmd.Parameters.AddWithValue("@name", $"%{name}%");
+
+        using var reader = cmd.ExecuteReader();
+        var results = new System.Text.StringBuilder();
+        while (reader.Read())
+        {
+            var album = reader.IsDBNull(2) ? "(앨범 없음)" : reader.GetString(2);
+            results.AppendLine($"[{reader.GetInt32(0)}] {reader.GetString(1)} — {album}");
+        }
+
+        return results.Length > 0 ? results.ToString() : $"'{name}'에 해당하는 아티스트를 찾을 수 없습니다.";
+    }
+
+    [McpServerTool, Description("트랙을 이름으로 검색하고, 앨범명, 아티스트명, 장르, 재생 시간을 함께 반환합니다.")]
+    public static string SearchTracks(
+        [Description("검색할 트랙 이름 (부분 일치)")] string keyword)
+    {
+        using var conn = new SqliteConnection($"Data Source={DbPath}");
+        conn.Open();
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT t.Name, al.Title, ar.Name, g.Name,
+                   t.Milliseconds / 1000 / 60 || ':' ||
+                   substr('0' || (t.Milliseconds / 1000 % 60), -2) AS Duration
+            FROM Track t
+            JOIN Album al ON t.AlbumId = al.AlbumId
+            JOIN Artist ar ON al.ArtistId = ar.ArtistId
+            JOIN Genre g ON t.GenreId = g.GenreId
+            WHERE t.Name LIKE @kw
+            ORDER BY ar.Name, al.Title
+            LIMIT 20
             """;
         cmd.Parameters.AddWithValue("@kw", $"%{keyword}%");
 
@@ -349,36 +405,65 @@ public static class BookTools
         while (reader.Read())
         {
             results.AppendLine(
-                $"[{reader.GetInt32(0)}] {reader.GetString(1)} — {reader.GetString(2)} ({reader.GetInt32(3)}, {reader.GetString(4)})");
+                $"{reader.GetString(0)} [{reader.GetString(4)}] — {reader.GetString(2)} / {reader.GetString(1)} ({reader.GetString(3)})");
         }
 
-        return results.Length > 0 ? results.ToString() : $"'{keyword}'에 해당하는 도서를 찾을 수 없습니다.";
+        return results.Length > 0 ? results.ToString() : $"'{keyword}'에 해당하는 트랙을 찾을 수 없습니다.";
     }
 
-    [McpServerTool, Description("특정 장르에 해당하는 도서 목록을 조회합니다.")]
-    public static string GetBooksByGenre(
-        [Description("조회할 장르 (예: 소프트웨어 공학, 시스템 설계, 웹)")] string genre)
+    [McpServerTool, Description("장르별 트랙 수와 총 재생 시간을 조회합니다. 특정 장르를 지정하면 해당 장르의 트랙 목록을 반환합니다.")]
+    public static string GetGenreStats(
+        [Description("특정 장르 이름 (생략하면 전체 장르 통계를 반환)")] string? genre = null)
     {
         using var conn = new SqliteConnection($"Data Source={DbPath}");
         conn.Open();
 
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            SELECT id, title, author, year, genre FROM books
-            WHERE genre = @genre
-            ORDER BY year
-            """;
-        cmd.Parameters.AddWithValue("@genre", genre);
+
+        if (string.IsNullOrWhiteSpace(genre))
+        {
+            cmd.CommandText = """
+                SELECT g.Name, COUNT(*) AS TrackCount,
+                       SUM(t.Milliseconds) / 1000 / 3600 || '시간 ' ||
+                       (SUM(t.Milliseconds) / 1000 % 3600) / 60 || '분' AS TotalDuration
+                FROM Track t
+                JOIN Genre g ON t.GenreId = g.GenreId
+                GROUP BY g.Name
+                ORDER BY TrackCount DESC
+                """;
+        }
+        else
+        {
+            cmd.CommandText = """
+                SELECT t.Name, ar.Name, al.Title,
+                       t.Milliseconds / 1000 / 60 || ':' ||
+                       substr('0' || (t.Milliseconds / 1000 % 60), -2) AS Duration
+                FROM Track t
+                JOIN Genre g ON t.GenreId = g.GenreId
+                JOIN Album al ON t.AlbumId = al.AlbumId
+                JOIN Artist ar ON al.ArtistId = ar.ArtistId
+                WHERE g.Name = @genre
+                ORDER BY ar.Name, t.Name
+                LIMIT 30
+                """;
+            cmd.Parameters.AddWithValue("@genre", genre);
+        }
 
         using var reader = cmd.ExecuteReader();
         var results = new System.Text.StringBuilder();
-        while (reader.Read())
+
+        if (string.IsNullOrWhiteSpace(genre))
         {
-            results.AppendLine(
-                $"[{reader.GetInt32(0)}] {reader.GetString(1)} — {reader.GetString(2)} ({reader.GetInt32(3)})");
+            while (reader.Read())
+                results.AppendLine($"{reader.GetString(0)}: {reader.GetInt32(1)}곡 ({reader.GetString(2)})");
+        }
+        else
+        {
+            while (reader.Read())
+                results.AppendLine($"{reader.GetString(0)} [{reader.GetString(3)}] — {reader.GetString(1)} / {reader.GetString(2)}");
         }
 
-        return results.Length > 0 ? results.ToString() : $"'{genre}' 장르의 도서를 찾을 수 없습니다.";
+        return results.Length > 0 ? results.ToString() : $"'{genre}' 장르를 찾을 수 없습니다.";
     }
 }
 ```
@@ -396,7 +481,7 @@ VS Code에서 GitHub Copilot의 Agent 모드를 통해 MCP 서버에 연결할 �
 ```json
 {
   "servers": {
-    "book-db": {
+    "chinook": {
       "type": "stdio",
       "command": "dotnet",
       "args": ["run", "app.cs"]
@@ -405,7 +490,7 @@ VS Code에서 GitHub Copilot의 Agent 모드를 통해 MCP 서버에 연결할 �
 }
 ```
 
-VS Code에서 GitHub Copilot Chat을 열고 **Agent 모드**로 전환한 뒤, **도구 선택(Select Tools)** 아이콘에서 `book-db` 서버가 표시되는지 확인합니다. 도구 목록에 `ListBooks`, `SearchBooks`, `GetBooksByGenre`가 나타나면 정상입니다.
+VS Code에서 GitHub Copilot Chat을 열고 **Agent 모드**로 전환한 뒤, **도구 선택(Select Tools)** 아이콘에서 `chinook` 서버가 표시되는지 확인합니다. 도구 목록에 `SearchArtists`, `SearchTracks`, `GetGenreStats`가 나타나면 정상입니다.
 
 ### 6-2. Claude Desktop 설정
 
@@ -417,7 +502,7 @@ Claude Desktop을 사용하는 경우, `claude_desktop_config.json` 파일에 �
 ```json
 {
   "mcpServers": {
-    "book-db": {
+    "chinook": {
       "command": "dotnet",
       "args": ["run", "app.cs"],
       "cwd": "/path/to/mcp-lab"
@@ -432,13 +517,14 @@ Claude Desktop을 사용하는 경우, `claude_desktop_config.json` 파일에 �
 
 클라이언트를 재시작한 뒤, 다음과 같이 자연어로 질의합니다.
 
-- "등록된 도서 목록을 보여주세요."
-- "Martin이 쓴 책을 찾아주세요."
-- "소프트웨어 공학 장르의 책은 뭐가 있나요?"
+- "AC/DC의 앨범 목록을 보여주세요."
+- "love라는 단어가 들어간 트랙을 찾아주세요."
+- "장르별 트랙 통계를 보여주세요."
+- "Rock 장르의 트랙을 보여주세요."
 
-AI가 MCP 도구를 호출하여 SQLite 데이터베이스에서 결과를 가져오는 것을 확인할 수 있습니다.
+AI가 MCP 도구를 호출하여 Chinook 데이터베이스에서 결과를 가져오는 것을 확인할 수 있습니다.
 
-> 📌 **체크포인트**: 클라이언트의 도구 목록에 `ListBooks`, `SearchBooks`, `GetBooksByGenre` 세 가지가 표시되고, 자연어 질의에 대해 정확한 결과가 반환되면 완료입니다.
+> 📌 **체크포인트**: 클라이언트의 도구 목록에 `SearchArtists`, `SearchTracks`, `GetGenreStats` 세 가지가 표시되고, 자연어 질의에 대해 정확한 결과가 반환되면 완료입니다.
 
 ---
 
@@ -480,17 +566,17 @@ AI가 MCP 도구를 호출하여 SQLite 데이터베이스에서 결과를 가�
 
 시간이 남는 참가자를 위한 확장 과제입니다.
 
-### 도전 1: 도서 추가 도구 구현
+### 도전 1: 고객 매출 조회 도구 구현
 
-`AddBook(string title, string author, int year, string genre)` 도구를 추가하여 AI가 데이터베이스에 새 도서를 등록할 수 있게 하십시오.
+`GetCustomerInvoices(string customerName)` 도구를 추가하여, 고객 이름으로 검색한 뒤 해당 고객의 인보이스 목록과 총 매출을 반환하십시오. `Customer`, `Invoice` 테이블을 JOIN하여 구현합니다.
 
-### 도전 2: 통계 도구 구현
+### 도전 2: 플레이리스트 조회 도구 구현
 
-`GetStats()` 도구를 추가하여 장르별 도서 수, 전체 도서 수, 가장 오래된/최신 도서 등의 통계를 반환하십시오.
+`GetPlaylist(string playlistName)` 도구를 추가하여, 특정 플레이리스트에 포함된 트랙 목록을 반환하십시오. `Playlist`, `PlaylistTrack`, `Track` 테이블을 JOIN하여 구현합니다.
 
-### 도전 3: 자신만의 도메인 적용
+### 도전 3: 매출 통계 도구 구현
 
-도서 대신 자신이 관심 있는 도메인(영화, 게임, 레시피 등)의 데이터로 교체하여 나만의 MCP 서버를 완성하십시오.
+`GetSalesStats()` 도구를 추가하여, 국가별 매출 합계, 최다 구매 고객, 가장 많이 팔린 아티스트 등의 통계를 반환하십시오.
 
 ### 도전 4: NuGet 패키지로 배포
 
@@ -521,6 +607,7 @@ dotnet new mcpserver -n MyMcpServer
 - [Model Context Protocol 공식 사이트](https://modelcontextprotocol.io)
 - [MCP C# SDK (GitHub)](https://github.com/modelcontextprotocol/csharp-sdk)
 - [ModelContextProtocol NuGet 패키지](https://www.nuget.org/packages/ModelContextProtocol)
+- [Chinook 데이터베이스 (GitHub)](https://github.com/lerocha/chinook-database)
 - [Microsoft.Data.Sqlite 문서](https://learn.microsoft.com/dotnet/standard/data/sqlite/)
 
 ---

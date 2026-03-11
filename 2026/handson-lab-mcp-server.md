@@ -7,7 +7,7 @@
 ## 모듈 개요
 
 | 항목 | 내용 |
-|------|------|
+| ------ | ------ |
 | 소요 시간 | 30분 |
 | 난이도 | 초중급 |
 | 대상 | C# 기초 문법을 아는 개발자 |
@@ -126,12 +126,14 @@ sqlite3 Chinook_Sqlite.sqlite "SELECT ArtistId, Name FROM Artist LIMIT 5;"
 #:package Microsoft.Data.Sqlite@9.*
 #:package ModelContextProtocol@0.*
 #:package Microsoft.Extensions.Hosting@10.*
+#:property PublishAot=false
 ```
 
 위 네 줄이 파일 기반 앱의 핵심입니다.
 
 - **첫 번째 줄 (Shebang)**: Unix 계열에서 `./app.cs`로 직접 실행할 수 있게 합니다. `#!/usr/bin/env dotnet`은 PATH에서 dotnet 경로를 자동으로 찾아줍니다. Windows에서는 무시되지만, 파일 기반 앱에서는 모든 플랫폼에서 이 지시문을 허용합니다.
 - **`#:package` 지시문**: NuGet 패키지 의존성을 파일 내에서 직접 선언합니다. `@9.*`처럼 와일드카드 버전을 사용하면 해당 메이저 버전의 최신 패키지를 자동으로 가져옵니다.
+- **`#:property PublishAot=false` 지시문**: 파일 기반 앱은 기본적으로 Native AOT 컴파일 옵션이 켜진 상태로 빌드됩니다. 오늘 살펴볼 MCP 서버 코드는 리플렉션 사용을 전제로 하기 때문에 AOT 지원을 켤 경우 제대로 작동하지 않을 수 있어 끕니다.
 
 ### 2-2. 필요한 네임스페이스 선언
 
@@ -327,6 +329,7 @@ public static class ChinookTools
 #:package Microsoft.Data.Sqlite@9.*
 #:package ModelContextProtocol@0.*
 #:package Microsoft.Extensions.Hosting@10.*
+#:property PublishAot=false
 
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;

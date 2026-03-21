@@ -1,0 +1,10 @@
+{
+  "MD009": true,
+  "MD012": true,
+  "MD013": {
+    "line_length": 80,
+    "stern": false
+  },
+  "MD041": true,
+  "MD060": true
+}

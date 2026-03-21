@@ -12,7 +12,7 @@
 
 ## 발표 슬라이드
 
-| 파일 | 제목 |
+| 세션 제목 및 발표하신 분 | 주제 |
 | ------ | ------ |
 | [Agentic AI 시대의 SDLC 혁명 - 김유신님](slides/agentic-ai-sdlc.pdf) | Agentic AI SDLC |
 | [AWS Transform for .NET: 레거시 .NET Framework에서 크로스 플랫폼 .NET으로 현대화 - 강병천님](slides/aws-transform.pdf) | AWS Transform |
